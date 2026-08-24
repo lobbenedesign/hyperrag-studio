@@ -1,0 +1,22 @@
+{
+  "name": "hyperrag-studio",
+  "version": "1.0.0",
+  "description": "The Next-Gen Knowledge Graph RAG (LightRAG) & Speculative Decoding Studio with DSPy Auto-Compiler.",
+  "main": "server.ts",
+  "scripts": {
+    "start": "bun server.ts",
+    "dev": "bun --watch server.ts"
+  },
+  "keywords": [
+    "lightrag",
+    "graphrag",
+    "speculative-decoding",
+    "eagle",
+    "medusa",
+    "dspy",
+    "ai-agent",
+    "knowledge-graph"
+  ],
+  "author": "Giuseppe Lobbene",
+  "license": "MIT"
+}

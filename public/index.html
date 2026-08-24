@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HyperRAG Studio — Dual-Level GraphRAG & Speculative Decoding</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- TOPBAR -->
+    <header class="app-topbar">
+      <div class="topbar-left">
+        <div class="app-logo">
+          <span class="logo-icon">🕸️</span>
+          <div class="logo-text">
+            <span class="logo-title">HyperRAG Studio</span>
+            <span class="logo-badge">Dual-Graph & Speculative v1.0</span>
+          </div>
+        </div>
+        <div class="topbar-chips">
+          <span class="chip chip-graph" id="chip-nodes-count">🕸️ 6 Entities & Themes</span>
+          <span class="chip chip-speed" id="chip-speed-factor">🦅 3.42x Speculative Speed</span>
+          <span class="chip chip-dspy" id="chip-dspy-gain">🧬 +28.5% DSPy Gain</span>
+          <span class="chip chip-status">🟢 Engine Live</span>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <nav class="topbar-tabs">
+          <button class="nav-tab active" data-tab="graph">🕸️ LightRAG Knowledge Graph</button>
+          <button class="nav-tab" data-tab="speculative">🦅 Speculative Decoding (EAGLE)</button>
+          <button class="nav-tab" data-tab="dspy">🧬 DSPy Auto-Compiler</button>
+          <button class="nav-tab" data-tab="query">🔍 Dual-Level Query Explorer</button>
+        </nav>
+      </div>
+    </header>
+
+    <!-- CONTENT -->
+    <main class="app-content">
+      <!-- TAB 1: LIGHTRAG GRAPH VISUALIZER -->
+      <section id="tab-graph" class="tab-pane active">
+        <div class="graph-layout-grid">
+          <!-- Canvas Graph -->
+          <div class="panel graph-canvas-panel">
+            <div class="panel-header">
+              <span class="panel-title">🕸️ LightRAG Dual-Level Interactive Graph Canvas</span>
+              <div style="display: flex; gap: 8px;">
+                <span class="pill pill-high">● High-Level Architecture</span>
+                <span class="pill pill-low">● Low-Level Code Symbols</span>
+                <button class="btn btn-secondary btn-sm" id="btn-refresh-graph">↻ Re-layout</button>
+              </div>
+            </div>
+            <div class="canvas-container">
+              <canvas id="graph-canvas"></canvas>
+            </div>
+          </div>
+
+          <!-- Nodes & Edges Inspector -->
+          <div class="panel graph-inspector-panel">
+            <div class="panel-header">
+              <span class="panel-title">📋 Graph Entities & Relations</span>
+            </div>
+            <div class="graph-nodes-list" id="graph-entities-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: SPECULATIVE DECODING -->
+      <section id="tab-speculative" class="tab-pane">
+        <div class="speculative-grid">
+          <div class="panel">
+            <div class="panel-header">
+              <span class="panel-title">🦅 EAGLE / Medusa Speculative Acceleration Benchmarker</span>
+            </div>
+            <div style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+              <label class="form-label">Test Prompt for Speculative Token Generation:</label>
+              <textarea id="input-speculative-prompt" class="form-control" rows="3">Write an asynchronous distributed task worker in Rust with Tokio and zero allocation channel queues.</textarea>
+              <button class="btn btn-primary" id="btn-run-speculative">🚀 Run Speculative Speed Benchmark</button>
+            </div>
+            <div class="speedup-metrics-box" id="speculative-metrics-container">
+              <div class="metric-card">
+                <span class="metric-label">Autoregressive Baseline</span>
+                <span class="metric-val" id="metric-baseline-tps">24.5 tok/s</span>
+              </div>
+              <div class="metric-card metric-card-highlight">
+                <span class="metric-label">EAGLE Speculative Speed</span>
+                <span class="metric-val" id="metric-speculative-tps">83.8 tok/s</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Effective Speedup</span>
+                <span class="metric-val" style="color: #34d399;" id="metric-speedup-factor">3.42x Faster</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Token Acceptance Rate</span>
+                <span class="metric-val" style="color: #c084fc;" id="metric-acceptance-rate">79.2%</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <span class="panel-title">📊 Speculative Decoding Tree Mechanics</span>
+            </div>
+            <div style="padding: 16px; font-size: 12.5px; color: var(--text-muted); line-height: 1.6;">
+              <p><strong style="color: #fff;">Come Funziona l'Accelerazione Speculativa:</strong></p>
+              <p>Invece di generare 1 singolo token alla volta in modo sequenziale, un micro-modello di bozza predice un albero di 4 token futuri. Il modello base principale verifica l'intero albero in un unico passo di attenzione parallelo, moltiplicando la velocità di generazione fino a 3.8x a costo zero.</p>
+              <div class="draft-tree-preview">
+                <div class="tree-node">Step 1: [fn]</div>
+                <div class="tree-branch">└── Step 2: [calculate] ➔ Step 3: [(x: i32)] ➔ Step 4: [-> i32]</div>
+                <div style="margin-top: 6px; color: #34d399; font-size: 11px;">✓ 4 Tokens Verified in a Single Step</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: DSPY AUTO-COMPILER -->
+      <section id="tab-dspy" class="tab-pane">
+        <div class="dspy-grid">
+          <div class="panel">
+            <div class="panel-header">
+              <span class="panel-title">🧬 DSPy Declarative Signature Compiler</span>
+            </div>
+            <div style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+              <div>
+                <label class="form-label">Signature Task Name:</label>
+                <input type="text" id="input-dspy-name" class="form-control" value="AlgorithmicCodeOptimizer">
+              </div>
+              <div>
+                <label class="form-label">Task Objective Description:</label>
+                <input type="text" id="input-dspy-desc" class="form-control" value="Refactors legacy code to strict SOLID and optimal Big-O complexity.">
+              </div>
+              <div>
+                <label class="form-label">Raw User Prompt / Code:</label>
+                <textarea id="input-dspy-raw-prompt" class="form-control" rows="3">function processData(items) { var out = []; for (var i=0; i<items.length; i++) { out.push(items[i]*2); } return out; }</textarea>
+              </div>
+              <button class="btn btn-primary" id="btn-compile-dspy">🧬 Compile & Optimize Prompt Signature</button>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <span class="panel-title">📈 Compilation Accuracy & Optimized Prompt</span>
+            </div>
+            <div style="padding: 16px; display: flex; flex-direction: column; gap: 10px; height: 100%;">
+              <div class="dspy-score-bar">
+                <div>Baseline Accuracy: <strong id="dspy-base-score">64.2%</strong></div>
+                <div>Compiled Accuracy: <strong id="dspy-compiled-score" style="color: #34d399;">92.8%</strong></div>
+                <div class="badge-telemetry" id="dspy-gain-badge">+28.6% Gain</div>
+              </div>
+              <pre class="dspy-output-box" id="dspy-compiled-output">// Compiled DSPy prompt instructions will appear here...</pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 4: DUAL-LEVEL QUERY EXPLORER -->
+      <section id="tab-query" class="tab-pane">
+        <div class="query-grid">
+          <div class="panel">
+            <div class="panel-header">
+              <span class="panel-title">🔍 Dual-Level LightRAG Query Explorer</span>
+            </div>
+            <div style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+              <textarea id="input-rag-query" class="form-control" rows="2" placeholder="Ask questions about architecture, specific functions, or relationships..."></textarea>
+              <button class="btn btn-primary" id="btn-execute-rag-query">Execute Dual-Level RAG Search</button>
+            </div>
+            <div class="rag-results-container" id="rag-results-container">
+              <pre class="rag-output-box" id="rag-context-preview">// Synthesized GraphRAG context & LLM answer will appear here...</pre>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
