@@ -5,9 +5,11 @@
  */
 
 import { LightRAGEngine } from "./src/lightrag_engine";
+import { TurboQuantEngine } from "./src/turboquant";
 import { SpeculativeDecodingEngine } from "./src/speculative_decoder";
 import { DSPyCompilerEngine } from "./src/dspy_compiler";
-import { TurboQuantEngine } from "./src/turboquant";
+import { HNSWVectorIndex } from "./src/hnsw_vector_index";
+import { RealVectorEmbedder } from "./src/real_vector_embedder";
 import { join } from "path";
 import { existsSync } from "fs";
 
@@ -17,7 +19,19 @@ const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://localhost:11434";
 const lightRAG = new LightRAGEngine();
 const speculativeEngine = new SpeculativeDecodingEngine(4);
 const dspyCompiler = new DSPyCompilerEngine();
+const hnswIndex = new HNSWVectorIndex();
+const embedder = new RealVectorEmbedder();
 const turboQuant = new TurboQuantEngine(64);
+
+// Seed initial knowledge base chunks into real HNSW index
+(async () => {
+  await hnswIndex.insert("chunk-1", "TurboQuant provides 4-bit vector quantization with QJL 1-bit residual error correction for inner products.");
+  await hnswIndex.insert("chunk-2", "Speculative decoding uses a smaller draft model to predict future tokens validated in parallel by the target LLM.");
+  await hnswIndex.insert("chunk-3", "LightRAG combines low-level concrete code entities with high-level architectural knowledge graphs.");
+  await hnswIndex.insert("chunk-4", "DSPy compiler optimizes prompt pipelines and signatures via bootstrap few-shot optimization.");
+  await hnswIndex.insert("chunk-5", "HNSW Hierarchical Navigable Small World graphs enable logarithmic time approximate nearest neighbor search.");
+  console.log("🌲 Real HNSW Vector Index seeded with 5 knowledge chunks.");
+})();
 
 let activeModel = "qwen2.5:7b";
 let totalQueriesServed = 0;
@@ -190,6 +204,39 @@ const server = Bun.serve({
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
       }
+    }
+
+    // 7. Real HNSW Vector Search
+    if (url.pathname === "/api/hnsw/search" && req.method === "POST") {
+      try {
+        let body: any = {};
+        try { body = await req.json(); } catch {}
+        const query = body.query || "fast inference server";
+        const k = Number(body.k) || 4;
+        const results = await hnswIndex.search(query, k);
+        return new Response(JSON.stringify({ query, results, stats: hnswIndex.getStats() }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
+      }
+    }
+
+    // 8. Real HNSW Vector Document Insertion
+    if (url.pathname === "/api/hnsw/insert" && req.method === "POST") {
+      try {
+        let body: any = {};
+        try { body = await req.json(); } catch {}
+        const id = body.id || `doc-${Date.now()}`;
+        const text = body.text || "";
+        const node = await hnswIndex.insert(id, text, body.metadata);
+        return new Response(JSON.stringify({ success: true, node: { id: node.id, level: node.level, text: node.text } }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
+      }
+    }
+
+    // 9. Real HNSW Index Topology Stats
+    if (url.pathname === "/api/hnsw/stats" && req.method === "GET") {
+      return new Response(JSON.stringify(hnswIndex.getStats()), { headers });
     }
 
     return new Response("Not Found", { status: 404, headers });
