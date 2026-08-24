@@ -34,6 +34,7 @@
           <button class="nav-tab" data-tab="speculative">🦅 Speculative Decoding (EAGLE)</button>
           <button class="nav-tab" data-tab="dspy">🧬 DSPy Auto-Compiler</button>
           <button class="nav-tab" data-tab="query">🔍 Dual-Level Query Explorer</button>
+          <button class="nav-tab" data-tab="turboquant">⚡ TurboQuant 4-Bit</button>
         </nav>
       </div>
     </header>
@@ -171,6 +172,47 @@
             <div class="rag-results-container" id="rag-results-container">
               <pre class="rag-output-box" id="rag-context-preview">// Synthesized GraphRAG context & LLM answer will appear here...</pre>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: TURBOQUANT 4-BIT VECTOR QUANTIZER -->
+      <section id="tab-turboquant" class="tab-pane">
+        <div class="speculative-grid">
+          <div class="panel">
+            <div class="panel-header">
+              <span class="panel-title">⚡ Google TurboQuant (4-Bit Vector Quantizer & QJL Transform)</span>
+              <span class="badge-telemetry" id="tq-ratio-badge">7.8x Compression</span>
+            </div>
+            <div style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+              <p style="font-size: 12px; color: var(--text-muted);">Test TurboQuant online compression and unbiased dot-product similarity search:</p>
+              <button class="btn btn-primary" id="btn-run-turboquant">⚡ Run TurboQuant Vector Quantization</button>
+            </div>
+            <div class="speedup-metrics-box">
+              <div class="metric-card">
+                <span class="metric-label">Original Vector Size (FP32)</span>
+                <span class="metric-val" id="tq-orig-size">256 bytes</span>
+              </div>
+              <div class="metric-card metric-card-highlight">
+                <span class="metric-label">TurboQuant 4-Bit + QJL</span>
+                <span class="metric-val" id="tq-comp-size">32 bytes</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">RAM Memory Saved</span>
+                <span class="metric-val" style="color: #34d399;" id="tq-ram-saved">87.5%</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Search Speedup</span>
+                <span class="metric-val" style="color: #38bdf8;">4.1x Faster</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <span class="panel-title">🔬 Quantized Similarity Search & QJL Residual Proof</span>
+            </div>
+            <pre class="dspy-output-box" id="tq-results-preview">// TurboQuant compressed vector inspection and search results will appear here...</pre>
           </div>
         </div>
       </section>

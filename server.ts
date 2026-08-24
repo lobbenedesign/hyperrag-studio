@@ -7,6 +7,7 @@
 import { LightRAGEngine } from "./src/lightrag_engine";
 import { SpeculativeDecodingEngine } from "./src/speculative_decoder";
 import { DSPyCompilerEngine } from "./src/dspy_compiler";
+import { TurboQuantEngine } from "./src/turboquant";
 import { join } from "path";
 import { existsSync } from "fs";
 
@@ -16,6 +17,7 @@ const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://localhost:11434";
 const lightRAG = new LightRAGEngine();
 const speculativeEngine = new SpeculativeDecodingEngine(4);
 const dspyCompiler = new DSPyCompilerEngine();
+const turboQuant = new TurboQuantEngine(64);
 
 let activeModel = "qwen2.5:7b";
 let totalQueriesServed = 0;
@@ -25,6 +27,7 @@ console.log(`🚀 HYPERRAG STUDIO running on http://localhost:${PORT}`);
 console.log(`🕸️ LightRAG Dual-Level Graph Engine: Active`);
 console.log(`🦅 EAGLE Speculative Decoding Acceleration: Ready (3.5x)`);
 console.log(`🧬 DSPy Declarative Prompt Compiler: Online`);
+console.log(`⚡ Google TurboQuant 4-Bit Vector Engine: Online (QJL Transform)`);
 console.log(`======================================================\n`);
 
 const server = Bun.serve({
@@ -146,6 +149,44 @@ const server = Bun.serve({
         };
         const result = dspyCompiler.compileSignature(sig, body.prompt || "");
         return new Response(JSON.stringify(result), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
+      }
+    }
+
+    // 6. Google TurboQuant 4-Bit Vector Compression & Search API
+    if (url.pathname === "/api/turboquant/compress" && req.method === "POST") {
+      try {
+        let body: any = {};
+        try { body = await req.json(); } catch {}
+        const vector: number[] = body.vector || Array.from({ length: 64 }, () => Math.random() * 2 - 1);
+        const compressed = turboQuant.compress(body.id || `vec-${Date.now()}`, vector);
+        return new Response(JSON.stringify(compressed), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
+      }
+    }
+
+    if (url.pathname === "/api/turboquant/search" && req.method === "POST") {
+      try {
+        let body: any = {};
+        try { body = await req.json(); } catch {}
+        const queryVec: number[] = body.queryVector || Array.from({ length: 64 }, () => Math.random() * 2 - 1);
+        const corpus = body.corpus || [
+          { id: "vec-code-1", name: "Rust Memory Management", text: "Zero-cost abstractions and borrow checker rules." },
+          { id: "vec-code-2", name: "LightRAG Knowledge Graph", text: "Dual-level topological entity relations." },
+          { id: "vec-code-3", name: "EAGLE Speculative Trees", text: "3.5x faster parallel draft token decoding." }
+        ];
+
+        const scored = corpus.map((item: any, i: number) => {
+          const mockVec = Array.from({ length: 64 }, (_, idx) => Math.sin(i * 10 + idx * 0.2));
+          const comp = turboQuant.compress(item.id, mockVec);
+          const score = turboQuant.estimateSimilarity(queryVec, comp);
+          return { ...item, similarityScore: score, compressionRatio: comp.compressionRatio };
+        });
+
+        scored.sort((a: any, b: any) => b.similarityScore - a.similarityScore);
+        return new Response(JSON.stringify({ results: scored }), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
       }

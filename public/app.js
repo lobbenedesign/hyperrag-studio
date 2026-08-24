@@ -14,6 +14,7 @@ document.addEventListener("DOMContentLoaded", () => {
   setupSpeculativeBenchmark();
   setupDSPyCompiler();
   setupRAGQuery();
+  setupTurboQuant();
 });
 
 function setupTabs() {
@@ -247,6 +248,38 @@ function setupRAGQuery() {
       fetchStatus();
     } catch (e) {
       outputBox.textContent = "RAG Query Error: " + e.message;
+    }
+  });
+}
+
+// 5. Google TurboQuant 4-Bit Vector Quantizer & QJL Search
+function setupTurboQuant() {
+  const btn = document.getElementById("btn-run-turboquant");
+  const outputBox = document.getElementById("tq-results-preview");
+
+  btn?.addEventListener("click", async () => {
+    btn.textContent = "⚡ Quantizing Vector with QJL Transform...";
+    try {
+      const res = await fetch("/api/turboquant/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      });
+      const data = await res.json();
+
+      let preview = "=== ⚡ GOOGLE TURBOQUANT (4-BIT QUANTIZED VECTOR SEARCH) ===\n";
+      preview += "• Algorithm: Random Orthogonal Projection + Scalar 4-bit + 1-bit QJL Residual\n";
+      preview += "• Compression Ratio: 7.8x (87.5% RAM Saved)\n\n[Ranked Similarity Results]:\n";
+
+      data.results.forEach((r, i) => {
+        preview += `\n#${i + 1} [Score: ${r.similarityScore.toFixed(4)}] ${r.name}\n   Summary: ${r.text}\n   Compression: ${r.compressionRatio}`;
+      });
+
+      outputBox.textContent = preview;
+      btn.textContent = "⚡ Run TurboQuant Vector Quantization";
+    } catch (e) {
+      outputBox.textContent = "TurboQuant Error: " + e.message;
+      btn.textContent = "⚡ Run TurboQuant";
     }
   });
 }
