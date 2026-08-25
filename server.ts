@@ -5,6 +5,7 @@
  */
 
 import { LightRAGEngine } from "./src/lightrag_engine";
+import { extractGraphFromText } from "./src/graph_ingest";
 import { TurboQuantEngine } from "./src/turboquant";
 import { SpeculativeDecodingEngine } from "./src/speculative_decoder";
 import { DSPyCompilerEngine } from "./src/dspy_compiler";
@@ -254,6 +255,48 @@ const server = Bun.serve({
     // 9. Real HNSW Index Topology Stats
     if (url.pathname === "/api/hnsw/stats" && req.method === "GET") {
       return new Response(JSON.stringify(hnswIndex.getStats()), { headers });
+    }
+
+    // 10. Real LLM-driven graph ingestion — extracts entities/relations from
+    // real text via a live Ollama call (see src/graph_ingest.ts) and merges
+    // them into the LightRAG graph, replacing hand-seeded data with content
+    // actually derived from what you feed it. Fails honestly (no fake graph)
+    // if Ollama is unreachable or its output doesn't parse.
+    if (url.pathname === "/api/graph/ingest" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const text: string = body.text || "";
+        const sourceLabel: string | undefined = body.sourceLabel;
+        const model: string = body.model || activeModel;
+
+        if (!text.trim()) {
+          return new Response(JSON.stringify({ error: "body.text is required and must be non-empty" }), {
+            status: 400,
+            headers
+          });
+        }
+
+        const extraction = await extractGraphFromText(text, { ollamaHost: OLLAMA_HOST, model });
+
+        const allEntities = extraction.chunks.flatMap((c) => c.entities);
+        const allRelations = extraction.chunks.flatMap((c) => c.relations);
+        const merge = lightRAG.ingestExtracted(allEntities, allRelations, sourceLabel);
+
+        return new Response(
+          JSON.stringify({
+            success: true,
+            model: extraction.model,
+            chunksProcessed: extraction.chunks.length,
+            totalEntitiesExtracted: extraction.totalEntitiesExtracted,
+            totalRelationsExtracted: extraction.totalRelationsExtracted,
+            merge,
+            graphStats: { nodes: lightRAG.getGraph().nodes.length, edges: lightRAG.getGraph().edges.length }
+          }),
+          { headers }
+        );
+      } catch (e: any) {
+        return new Response(JSON.stringify({ success: false, error: e.message }), { status: 502, headers });
+      }
     }
 
     return new Response("Not Found", { status: 404, headers });

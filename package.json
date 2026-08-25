@@ -1,6 +1,6 @@
 {
   "name": "hyperrag-studio",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Local Bun/TypeScript playground: real HNSW vector search + graph RAG toy, plus an honestly-labeled draft/target speculative-decoding benchmark and a structural DSPy-style prompt compiler (both live-scored against local Ollama when available).",
   "main": "server.ts",
   "scripts": {

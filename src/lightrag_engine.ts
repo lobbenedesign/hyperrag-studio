@@ -122,6 +122,73 @@ export class LightRAGEngine {
     this.graph.totalRelations = this.graph.edges.length;
   }
 
+  private slugify(name: string): string {
+    return name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48);
+  }
+
+  private findNodeByName(name: string): GraphNode | undefined {
+    const target = name.trim().toLowerCase();
+    return this.graph.nodes.find((n) => n.name.trim().toLowerCase() === target);
+  }
+
+  /**
+   * Merges LLM-extracted entities/relations (see src/graph_ingest.ts) into
+   * the live graph, deduping by case-insensitive name so re-ingesting the
+   * same document (or an overlapping one) doesn't pile up duplicate nodes.
+   * An existing node's description/tags are left alone; only genuinely new
+   * entities create new nodes, and only edges between nodes that exist
+   * (pre- or post-merge) are added — no dangling edges.
+   */
+  public ingestExtracted(
+    entities: { name: string; type: GraphNode["type"]; level: GraphNode["level"]; description: string; tags: string[] }[],
+    relations: { source: string; target: string; relation: string; weight: number }[],
+    sourceLabel?: string
+  ): { nodesAdded: number; nodesMerged: number; edgesAdded: number } {
+    let nodesAdded = 0;
+    let nodesMerged = 0;
+
+    for (const e of entities) {
+      const existing = this.findNodeByName(e.name);
+      if (existing) {
+        nodesMerged++;
+        continue;
+      }
+      const id = `ing-${this.slugify(e.name)}-${this.graph.nodes.length}`;
+      this.graph.nodes.push({
+        id,
+        name: e.name,
+        type: e.type,
+        level: e.level,
+        description: e.description,
+        fileLocation: sourceLabel,
+        tags: e.tags
+      });
+      nodesAdded++;
+    }
+    this.graph.totalEntities = this.graph.nodes.length;
+
+    let edgesAdded = 0;
+    for (const r of relations) {
+      const sourceNode = this.findNodeByName(r.source);
+      const targetNode = this.findNodeByName(r.target);
+      if (!sourceNode || !targetNode) continue; // no dangling edges
+      const dup = this.graph.edges.some(
+        (edge) => edge.source === sourceNode.id && edge.target === targetNode.id && edge.relation === r.relation
+      );
+      if (dup) continue;
+      this.graph.edges.push({ source: sourceNode.id, target: targetNode.id, relation: r.relation, weight: r.weight });
+      edgesAdded++;
+    }
+    this.graph.totalRelations = this.graph.edges.length;
+    this.graph.lastIndexedAt = new Date().toISOString();
+
+    return { nodesAdded, nodesMerged, edgesAdded };
+  }
+
   /**
    * Dual-Level Query:
    * 1. Low-Level: Fetches exact matching functions, classes, and specific code entities.

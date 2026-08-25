@@ -22,7 +22,7 @@ This project's earlier README claimed a full **LightRAG + EAGLE Speculative Deco
 
 | Module | Claim (old) | What's actually there |
 |---|---|---|
-| `src/lightrag_engine.ts` | Dual-level LightRAG knowledge graph | Real: a small in-memory graph of hand-seeded nodes/edges with a genuine keyword-overlap scoring query (low-level vs high-level node matching). Not a real ingestion/indexing pipeline over a codebase — the graph is seed data, not extracted from your project. |
+| `src/lightrag_engine.ts` | Dual-level LightRAG knowledge graph | Real: a small in-memory graph with a genuine keyword-overlap scoring query (low-level vs high-level node matching). The graph now also has a **real ingestion path** — see below — so it's no longer only seed data, though the seed nodes from the original release remain until you ingest something. |
 | `src/hnsw_vector_index.ts` + `src/real_vector_embedder.ts` | (implied vector search) | Real: an actual HNSW (Malkov & Yashunin) graph implementation with real cosine similarity. Embeddings come from a live call to Ollama's embedding API when available, or fall back to a deterministic FNV-1a trigram/word hash embedding (NOT a trained semantic embedding model) when Ollama/the embedding model isn't reachable. |
 | `src/speculative_decoder.ts` | "EAGLE/Medusa speculative decoding, 3.0x–3.8x faster, zero quality loss" | **Not real EAGLE/Medusa.** True EAGLE speculative decoding needs a draft head trained on the target model's hidden states plus tree-attention logit verification inside the inference engine — Ollama's HTTP API exposes none of that. What runs instead: a **real** benchmark that sends the same prompt to a small "draft" model (`granite3-dense:2b`) and a larger "target" model (`qwen2.5:7b`) via local Ollama, measures **real** tokens/sec from Ollama's own counters, and computes a **real** (but approximate) word-overlap rate between the two live outputs as a stand-in for an "acceptance rate". No hidden state, no logit verification, no fabricated numbers — but also not true speculative decoding. Throws an honest error if Ollama is unreachable instead of returning fake numbers. |
 | `src/dspy_compiler.ts` | "DSPy declarative prompt compiler, +28.5% accuracy" | **Not the real DSPy library.** No dataset, no real teleprompter training loop. What runs instead: it structurally compiles a typed signature into an explicit instruction prompt, and — when Ollama is reachable — actually calls the model once to capture a real one-shot demonstration and again to A/B-score the naive vs. compiled prompt using a real, computed structural-adherence heuristic (JSON validity, presence of requested output fields, length sanity). If Ollama is unreachable it clearly reports `liveEvaluated: false` and labels the numbers as an offline heuristic, not a measured accuracy gain. |
@@ -34,9 +34,65 @@ This project's earlier README claimed a full **LightRAG + EAGLE Speculative Deco
 - `/api/query`'s Ollama fallback silently fabricated a fake "synthesis" string when Ollama was unreachable, making failures look like successful LLM answers. Fixed: the endpoint now returns `llmUsed: false` and a real `synthesisError` message instead of pretending an LLM responded.
 - `/api/status` returned hardcoded `accelerationMultiplier: "3.42x"` and `dspyOptimizationAvgGain: "+28.5%"` regardless of whether any benchmark had ever run. Fixed: these now reflect the last **real** measured result from `/api/speculative/bench` and `/api/dspy/compile`, and say "not yet measured" until you actually run one.
 
+### 🧩 Real LLM-driven graph ingestion (`src/graph_ingest.ts`)
+
+The "not a real ingestion pipeline" gap above was real, and it's the same gap
+between a toy graph and what actual LightRAG / Microsoft GraphRAG do: both
+build their knowledge graphs by running an LLM entity/relationship
+extraction pass over document chunks — GraphRAG's own repo calls this step
+"element extraction" (verified against
+[github.com/microsoft/graphrag](https://github.com/microsoft/graphrag), not
+assumed from memory).
+
+`POST /api/graph/ingest` with `{ "text": "...", "sourceLabel"?: "...",
+"model"?: "qwen2.5:7b" }` now does the same *technique* against local
+Ollama:
+
+1. Splits the input into paragraph-bounded chunks (~1400 chars).
+2. For each chunk, calls Ollama's `/api/chat` with `format: "json"` and a
+   schema-constrained prompt asking for `{entities, relations}`.
+3. Validates the response: unknown `type`/`level` values are coerced to safe
+   defaults, and — importantly — **any relation whose `source` or `target`
+   doesn't match a `name` the model also extracted as an entity is dropped**,
+   so a hallucinated edge can't reference a node that doesn't exist.
+4. Merges into `LightRAGEngine`'s live graph via the new
+   `ingestExtracted()` method, deduping by case-insensitive entity name so
+   re-ingesting the same or an overlapping document doesn't pile up
+   duplicate nodes — it reports `nodesAdded` vs `nodesMerged` so you can see
+   which happened.
+
+If Ollama is unreachable, returns a non-JSON response, or returns JSON that
+doesn't parse into the expected shape, the endpoint returns
+`{"success": false, "error": "..."}` with HTTP 502 — it does **not** fall
+back to inserting a fake or empty graph, matching this project's existing
+honesty policy.
+
+**What this is not**: it does not reimplement GraphRAG's actual extraction
+prompts, nor its later community-detection/summarization stages (Leiden
+clustering, hierarchical community reports) — only the entity/relation
+extraction step, applied to `LightRAGEngine`'s existing (simpler) two-level
+node model, not GraphRAG's multi-level community hierarchy.
+
+**Verified, 2026-08-25**, against a real local Ollama (`qwen2.5:7b`):
+- Ingested a real two-paragraph technical text describing this project's own
+  `HNSWVectorIndex`/`TurboQuantEngine` classes → 4 entities, 4 relations
+  extracted and merged (`nodesAdded: 4, nodesMerged: 0, edgesAdded: 4`),
+  confirmed present in `GET /api/graph` and retrievable via `POST
+  /api/query` afterward.
+- Re-ingested the identical text → `nodesAdded: 0, nodesMerged: 2,
+  edgesAdded: 0` (partial dedupe: the model didn't re-extract identical
+  entities/relations verbatim the second time, which is expected LLM
+  non-determinism, but the entities it did re-extract by the same name
+  correctly merged into the existing nodes rather than duplicating them).
+- `model: "not-a-real-model-xyz"` → HTTP 502,
+  `{"success":false,"error":"Ollama returned HTTP 404 while extracting entities from chunk 1/1"}`
+  — a real Ollama 404, not a fabricated graph.
+- `text: ""` → HTTP 400 with a validation error, no Ollama call made.
+
 ### 🌟 Core Modules
 
-* **`src/lightrag_engine.ts`**: Seeded dual-level graph + keyword-overlap query engine.
+* **`src/lightrag_engine.ts`**: Dual-level graph + keyword-overlap query engine, now with real merge/dedupe ingestion (`ingestExtracted()`).
+* **`src/graph_ingest.ts`**: Real LLM entity/relation extraction from text via local Ollama (`format: "json"`), feeding `ingestExtracted()`. Honest failure (no fake graph) if Ollama is unreachable or returns unparseable output.
 * **`src/hnsw_vector_index.ts`** / **`src/real_vector_embedder.ts`**: Real HNSW ANN index over real (or hash-fallback) embeddings.
 * **`src/speculative_decoder.ts`**: Real draft-vs-target throughput benchmark against local Ollama (not true EAGLE).
 * **`src/dspy_compiler.ts`**: Structural prompt compiler with live Ollama A/B scoring when available (not real DSPy).
