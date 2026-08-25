@@ -42,8 +42,8 @@ async function fetchStatus() {
     const res = await fetch("/api/status");
     const data = await res.json();
     document.getElementById("chip-nodes-count").textContent = `🕸️ ${data.graphNodesCount} Entities & Themes`;
-    document.getElementById("chip-speed-factor").textContent = `🦅 ${data.accelerationMultiplier} Speculative Speed`;
-    document.getElementById("chip-dspy-gain").textContent = `🧬 ${data.dspyOptimizationAvgGain} DSPy Gain`;
+    document.getElementById("chip-speed-factor").textContent = `🦅 ${data.accelerationMultiplier}`;
+    document.getElementById("chip-dspy-gain").textContent = `🧬 ${data.dspyOptimizationAvgGain}`;
   } catch {}
 }
 
@@ -171,14 +171,17 @@ function setupSpeculativeBenchmark() {
         body: JSON.stringify({ prompt })
       });
       const data = await res.json();
+      if (data.error) throw new Error(data.error);
 
-      document.getElementById("metric-baseline-tps").textContent = `${data.baselineTokensPerSec} tok/s`;
-      document.getElementById("metric-speculative-tps").textContent = `${data.speculativeTokensPerSec} tok/s`;
-      document.getElementById("metric-speedup-factor").textContent = `${data.speedupFactor} Faster`;
-      document.getElementById("metric-acceptance-rate").textContent = `${data.acceptanceRate}`;
+      document.getElementById("metric-baseline-tps").textContent = `${data.draftTokensPerSec} tok/s (${data.draftModel})`;
+      document.getElementById("metric-speculative-tps").textContent = `${data.targetTokensPerSec} tok/s (${data.targetModel})`;
+      document.getElementById("metric-speedup-factor").textContent = `${data.measuredSpeedupFactor}`;
+      document.getElementById("metric-acceptance-rate").textContent = `${data.tokenOverlapAcceptanceRate}`;
       btn.textContent = "🚀 Run Speculative Speed Benchmark";
     } catch (e) {
       btn.textContent = "🚀 Benchmark Failed";
+      document.getElementById("metric-baseline-tps").textContent = "Ollama unreachable";
+      document.getElementById("metric-speculative-tps").textContent = e.message;
     }
   });
 }
@@ -212,11 +215,12 @@ function setupDSPyCompiler() {
         })
       });
       const data = await res.json();
+      if (data.error) throw new Error(data.error);
 
-      document.getElementById("dspy-base-score").textContent = `${data.baselineAccuracy}%`;
-      document.getElementById("dspy-compiled-score").textContent = `${data.compiledAccuracy}%`;
-      document.getElementById("dspy-gain-badge").textContent = `${data.accuracyGain} Gain`;
-      outputBox.textContent = data.optimizedPrompt;
+      document.getElementById("dspy-base-score").textContent = `${(data.baselineAccuracy * 100).toFixed(1)}%`;
+      document.getElementById("dspy-compiled-score").textContent = `${(data.compiledAccuracy * 100).toFixed(1)}%`;
+      document.getElementById("dspy-gain-badge").textContent = `${data.accuracyGain} Gain${data.liveEvaluated ? " (live)" : " (offline heuristic, not live-evaluated)"}`;
+      outputBox.textContent = data.compiledPrompt + (data.notes ? `\n\n// ${data.notes}` : "");
       btn.textContent = "🧬 Compile & Optimize Prompt Signature";
     } catch (e) {
       outputBox.textContent = "Compilation Error: " + e.message;
@@ -244,7 +248,11 @@ function setupRAGQuery() {
       });
       const data = await res.json();
 
-      outputBox.textContent = `${data.rag.synthesizedContext}\n\n🤖 [LLM Synthesis Output]:\n${data.synthesis}`;
+      const llmSection = data.llmUsed
+        ? `🤖 [LLM Synthesis Output]:\n${data.synthesis}`
+        : `⚠️ [LLM Synthesis Unavailable]: ${data.synthesisError || "Unknown error"}\n(Graph retrieval above is real; no LLM text was generated for this query.)`;
+
+      outputBox.textContent = `${data.rag.synthesizedContext}\n\n${llmSection}`;
       fetchStatus();
     } catch (e) {
       outputBox.textContent = "RAG Query Error: " + e.message;

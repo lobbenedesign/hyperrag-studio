@@ -35,13 +35,18 @@ const turboQuant = new TurboQuantEngine(64);
 
 let activeModel = "qwen2.5:7b";
 let totalQueriesServed = 0;
+// These are updated from REAL measured results of the last /api/speculative/bench
+// and /api/dspy/compile calls, not hardcoded marketing numbers. Null until a
+// real benchmark/compile has actually run in this process.
+let lastMeasuredSpeedupFactor: string | null = null;
+let lastMeasuredDspyGain: string | null = null;
 
 console.log(`\n======================================================`);
 console.log(`🚀 HYPERRAG STUDIO running on http://localhost:${PORT}`);
 console.log(`🕸️ LightRAG Dual-Level Graph Engine: Active`);
-console.log(`🦅 EAGLE Speculative Decoding Acceleration: Ready (3.5x)`);
-console.log(`🧬 DSPy Declarative Prompt Compiler: Online`);
-console.log(`⚡ Google TurboQuant 4-Bit Vector Engine: Online (QJL Transform)`);
+console.log(`🦅 Draft/Target Speculative Benchmark (real Ollama measurement): Ready`);
+console.log(`🧬 DSPy-Inspired Prompt Compiler (live Ollama-scored when reachable): Online`);
+console.log(`⚡ TurboQuant-style 4-Bit Vector Engine: Online (QJL-style residual)`);
 console.log(`======================================================\n`);
 
 const server = Bun.serve({
@@ -86,8 +91,8 @@ const server = Bun.serve({
         graphNodesCount: g.nodes.length,
         graphEdgesCount: g.edges.length,
         totalQueriesServed,
-        accelerationMultiplier: "3.42x",
-        dspyOptimizationAvgGain: "+28.5%"
+        accelerationMultiplier: lastMeasuredSpeedupFactor || "not yet measured (run a speculative benchmark)",
+        dspyOptimizationAvgGain: lastMeasuredDspyGain || "not yet measured (run a DSPy compile)"
       }), { headers });
     }
 
@@ -105,8 +110,12 @@ const server = Bun.serve({
 
         const ragResult = lightRAG.query(prompt);
 
-        // Perform LLM Synthesis
+        // Perform LLM Synthesis against a live local Ollama model.
+        // IMPORTANT: if Ollama is unreachable or errors, we report that
+        // honestly instead of fabricating a fake "synthesis" string that
+        // pretends the LLM answered.
         let synthesis = "";
+        let synthesisError: string | null = null;
         try {
           const ollamaRes = await fetch(`${OLLAMA_HOST}/api/chat`, {
             method: "POST",
@@ -118,21 +127,27 @@ const server = Bun.serve({
                 { role: "user", content: prompt }
               ],
               stream: false
-            })
+            }),
+            signal: AbortSignal.timeout(45000)
           });
           if (ollamaRes.ok) {
             const data: any = await ollamaRes.json();
             synthesis = data.message?.content || "";
+            if (!synthesis) synthesisError = "Ollama responded but returned no content.";
+          } else {
+            synthesisError = `Ollama returned HTTP ${ollamaRes.status}.`;
           }
-        } catch {
-          synthesis = `[HyperRAG Synthesis for: "${prompt}"]\n\nDual-level graph retrieval mapped ${ragResult.lowLevelMatches.length} code entities and ${ragResult.highLevelMatches.length} architectural themes.`;
+        } catch (err: any) {
+          synthesisError = `Ollama unreachable at ${OLLAMA_HOST}: ${err.message}`;
         }
 
         return new Response(JSON.stringify({
           success: true,
           prompt,
           rag: ragResult,
-          synthesis
+          synthesis,
+          synthesisError,
+          llmUsed: synthesisError ? false : true
         }), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
@@ -145,6 +160,7 @@ const server = Bun.serve({
         const body: any = await req.json();
         const prompt = body.prompt || "Generate high performance code";
         const bench = await speculativeEngine.benchmark(prompt, body.model || activeModel);
+        lastMeasuredSpeedupFactor = bench.measuredSpeedupFactor;
         return new Response(JSON.stringify(bench), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
@@ -161,7 +177,8 @@ const server = Bun.serve({
           inputs: [{ field: "spec", type: "string", desc: "Feature requirement" }],
           outputs: [{ field: "code", type: "string", desc: "Production code" }]
         };
-        const result = dspyCompiler.compileSignature(sig, body.prompt || "");
+        const result = await dspyCompiler.compileSignature(sig, body.prompt || "");
+        lastMeasuredDspyGain = result.accuracyGain;
         return new Response(JSON.stringify(result), { headers });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });

@@ -1,7 +1,7 @@
 {
   "name": "hyperrag-studio",
   "version": "1.0.0",
-  "description": "The Next-Gen Knowledge Graph RAG (LightRAG) & Speculative Decoding Studio with DSPy Auto-Compiler.",
+  "description": "Local Bun/TypeScript playground: real HNSW vector search + graph RAG toy, plus an honestly-labeled draft/target speculative-decoding benchmark and a structural DSPy-style prompt compiler (both live-scored against local Ollama when available).",
   "main": "server.ts",
   "scripts": {
     "start": "bun server.ts",
