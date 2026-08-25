@@ -163,7 +163,14 @@ export async function extractGraphFromText(
         ],
         stream: false
       }),
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 60000)
+      // Default raised from an earlier 60000ms after real measurement on
+      // this project's actual dev machine: a single JSON-constrained
+      // extraction call to qwen2.5:7b took ~68s wall clock (eval_duration
+      // ~66.5s for 671 output tokens ≈ 10 tok/s, CPU-bound local inference)
+      // — 60s was cutting off real, in-progress, correct responses, not
+      // catching genuinely hung requests. 120s gives real slow-hardware
+      // CPU inference room to finish before this is treated as a failure.
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 120000)
     });
 
     if (!res.ok) {

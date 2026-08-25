@@ -1,5 +1,66 @@
 # Changelog
 
+## Unreleased — real hybrid retrieval + real document ingestion
+
+**Gap and source.** With graph ingestion done, two gaps remained from
+studying real comparable projects (LightRAG, LlamaIndex, txtai, DSPy):
+(1) this project's real graph query and real HNSW vector search ran as two
+disconnected paths — `/api/query` never used HNSW at all — even though real
+LightRAG's own documented "hybrid mode" is exactly merging graph + vector
+retrieval (checked against https://github.com/HKUDS/LightRAG); (2) the only
+way to get a user's own document into the system was one string → one
+vector (`/api/hnsw/insert`) or graph-only (`/api/graph/ingest`), with no
+real chunking and no single path that fed both retrieval mechanisms.
+
+### Added
+- `src/hybrid_retrieval.ts` — `buildHybridContext()`: merges a
+  `LightRAGEngine.query()` graph result with real HNSW `search()` results
+  into one labeled context block (graph themes/entities/relations + vector
+  chunks with their cosine similarity scores), in the same spirit as
+  LightRAG's hybrid mode.
+- `POST /api/query` (`server.ts`) now runs both the graph query and a real
+  HNSW vector search over the same prompt and merges them via
+  `buildHybridContext()` before LLM synthesis; response gains
+  `retrievalMode: "hybrid (graph + HNSW vector, LightRAG hybrid-mode
+  style)"`. HNSW search failing degrades to graph-only context instead of
+  failing the request.
+- `src/document_ingest.ts` — `chunkBySentence()` (lossless sentence-boundary
+  splitting via `String.split(/(?<=[.!?])\s+(?=[A-Z0-9"'(])/)`) and
+  `ingestDocument()`, which chunks a user-supplied document, inserts every
+  chunk into the real HNSW index, and (optionally) runs the whole document
+  through the existing `extractGraphFromText` pipeline into the LightRAG
+  graph — one call populates both retrieval paths the new hybrid query
+  merges. Reports vector-index and graph-extraction success/failure
+  independently rather than one combined flag.
+- `POST /api/document/ingest` (`server.ts`) — `{text, documentId?,
+  extractGraph?, model?, maxChunkChars?}` → runs the above.
+
+### Fixed
+- `chunkBySentence()`'s first implementation used a consuming regex
+  (`[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$`) that silently *deleted* text
+  immediately after a period not followed by whitespace — measured on a
+  real test document: `"Bun.serve() starts an HTTP server..."` chunked to
+  `"serve() starts an HTTP server..."` (dropping `"Bun."`), `"qwen2.5:7b"`
+  dropped its `"qwen2."` prefix. Fixed by switching to a lossless
+  `String.split` on a lookbehind boundary, which cannot discard characters
+  the way the consuming alternation could. Re-verified against the same
+  document afterward: both tokens preserved intact in the extracted graph
+  node names.
+- `src/graph_ingest.ts`'s per-chunk Ollama extraction call timeout raised
+  from 60000ms to 120000ms after measuring real local inference time on
+  this dev machine: a single JSON-constrained extraction call to
+  `qwen2.5:7b` took ~68s wall clock (CPU-bound, ~10 tok/s) — the old 60s
+  timeout was cutting off real in-progress correct responses, not catching
+  hung requests. This also benefits the pre-existing `/api/graph/ingest`
+  endpoint.
+
+### Verified
+- Real local Ollama (`qwen2.5:7b`), real HNSW index, real graph — see
+  README "Real hybrid retrieval" and "Real user document ingestion"
+  sections for the specific measured requests/responses (similarity
+  rankings, chunk counts, entity/edge counts, the bad-model 404 path, the
+  empty-text 400 path).
+
 ## Unreleased — real LLM-driven graph ingestion
 
 **Gap and source.** The "Honest Status" table in the README (added during

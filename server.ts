@@ -6,6 +6,8 @@
 
 import { LightRAGEngine } from "./src/lightrag_engine";
 import { extractGraphFromText } from "./src/graph_ingest";
+import { buildHybridContext } from "./src/hybrid_retrieval";
+import { ingestDocument } from "./src/document_ingest";
 import { TurboQuantEngine } from "./src/turboquant";
 import { SpeculativeDecodingEngine } from "./src/speculative_decoder";
 import { DSPyCompilerEngine } from "./src/dspy_compiler";
@@ -109,7 +111,22 @@ const server = Bun.serve({
         const prompt = body.prompt || "";
         totalQueriesServed += 1;
 
-        const ragResult = lightRAG.query(prompt);
+        const graphResult = lightRAG.query(prompt);
+
+        // Real hybrid retrieval: merge the graph query above with a real
+        // HNSW cosine-similarity vector search over the same prompt, same
+        // idea as LightRAG's own documented "hybrid mode" (graph structure
+        // + raw text chunks). Vector search failing (e.g. embedder falling
+        // back, or an empty index) degrades to graph-only context rather
+        // than failing the whole request — it's an honest empty section,
+        // not a fabricated match.
+        let vectorMatches: Awaited<ReturnType<typeof hnswIndex.search>> = [];
+        try {
+          vectorMatches = await hnswIndex.search(prompt, 4);
+        } catch (err: any) {
+          console.warn(`hybrid retrieval: HNSW vector search failed: ${err.message}`);
+        }
+        const ragResult = buildHybridContext(graphResult, vectorMatches);
 
         // Perform LLM Synthesis against a live local Ollama model.
         // IMPORTANT: if Ollama is unreachable or errors, we report that
@@ -145,6 +162,7 @@ const server = Bun.serve({
         return new Response(JSON.stringify({
           success: true,
           prompt,
+          retrievalMode: "hybrid (graph + HNSW vector, LightRAG hybrid-mode style)",
           rag: ragResult,
           synthesis,
           synthesisError,
@@ -296,6 +314,38 @@ const server = Bun.serve({
         );
       } catch (e: any) {
         return new Response(JSON.stringify({ success: false, error: e.message }), { status: 502, headers });
+      }
+    }
+
+    // 11. Real document ingestion: sentence-boundary chunking → real HNSW
+    // vector indexing of every chunk + (optionally) real LLM graph
+    // extraction over the whole document, reusing the existing
+    // extractGraphFromText pipeline. This is what actually lets a user feed
+    // their own document into both retrieval paths that /api/query's hybrid
+    // mode merges, instead of only the hand-seeded HNSW chunks and hand-
+    // seeded graph nodes from server startup.
+    if (url.pathname === "/api/document/ingest" && req.method === "POST") {
+      try {
+        const body: any = await req.json();
+        const text: string = body.text || "";
+        if (!text.trim()) {
+          return new Response(JSON.stringify({ error: "body.text is required and must be non-empty" }), {
+            status: 400,
+            headers
+          });
+        }
+        const result = await ingestDocument(text, {
+          documentId: body.documentId,
+          hnswIndex,
+          lightRAG,
+          extractGraph: body.extractGraph !== false, // default true
+          ollamaHost: OLLAMA_HOST,
+          model: body.model || activeModel,
+          maxChunkChars: Number(body.maxChunkChars) || 800
+        });
+        return new Response(JSON.stringify({ success: true, ...result }), { headers });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ success: false, error: e.message }), { status: 500, headers });
       }
     }
 

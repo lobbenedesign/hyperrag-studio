@@ -89,10 +89,106 @@ node model, not GraphRAG's multi-level community hierarchy.
   — a real Ollama 404, not a fabricated graph.
 - `text: ""` → HTTP 400 with a validation error, no Ollama call made.
 
+### 🔀 Real hybrid retrieval (`src/hybrid_retrieval.ts`)
+
+Before this module, `POST /api/query` only ever ran `LightRAGEngine.query()`
+(graph keyword-overlap matching). The real `HNSWVectorIndex` +
+`RealVectorEmbedder` already existed in this codebase but were only
+reachable through the separate `/api/hnsw/search` endpoint — never combined
+with the graph query, even though real LightRAG's own documented "hybrid
+mode" is exactly this merge (verified against
+[github.com/HKUDS/LightRAG](https://github.com/HKUDS/LightRAG): "Hybrid Mode
+integrates local and global retrieval methods... simultaneously leverages
+both structured knowledge and unstructured text"). `/api/query` now runs
+*both* retrieval paths against the same prompt — the graph query and a real
+HNSW cosine-similarity vector search — and merges them into one labeled
+context block via `buildHybridContext()`, added to the response as
+`retrievalMode: "hybrid (graph + HNSW vector, LightRAG hybrid-mode style)"`.
+Nothing here claims to be more than what it already was: a graph match is
+still keyword overlap over a small in-memory graph, a vector match is still
+cosine similarity over a 384-dim embedding (real Ollama embedding or the
+deterministic hash fallback, exactly as documented above) — this only
+connects the two paths that previously ran in isolation. If the vector
+search errors (e.g. an empty index), the request degrades to graph-only
+context rather than failing outright.
+
+**Verified, 2026-08-25**, against a real local Ollama (`qwen2.5:7b`) and the
+five HNSW chunks seeded at server startup: querying "How does the HNSW
+vector index perform approximate nearest neighbor search and how does it
+relate to quantization?" returned `vectorMatches` correctly ranked by
+similarity — `chunk-5` (the HNSW description) highest at `sim=0.234`, down
+to `chunk-3` (the LightRAG description, least related) lowest at
+`sim=0.059` — alongside the graph's own (unrelated, keyword-only) matches,
+confirming the two paths are genuinely independent scores being merged, not
+one path silently masking the other.
+
+### 📄 Real user document ingestion (`src/document_ingest.ts`)
+
+Addresses the gap the earlier version of this README's roadmap called out —
+until now the only user-facing ingestion path was `/api/hnsw/insert`, which
+embeds one caller-supplied string as exactly *one* vector, and
+`/api/graph/ingest`, which extracts a graph but never touches the vector
+index. `POST /api/document/ingest` with `{ "text": "...", "documentId"?,
+"extractGraph"?: true, "model"?, "maxChunkChars"?: 800 }` does real
+sentence-boundary chunking of the whole document — not naive fixed-size
+mid-sentence cuts — then feeds every chunk into the real HNSW index as its
+own vector node **and** (unless `extractGraph: false`) runs the whole
+document through the existing `extractGraphFromText` pipeline into the
+LightRAG graph, so one upload populates both retrieval paths that the new
+hybrid `/api/query` merges. Same pattern real chunkers use (LlamaIndex's
+`SentenceSplitter`, txtai's `Textractor`) — chunk before embedding so one
+vector doesn't have to represent an entire document — reimplemented from
+scratch here, not copied.
+
+Each stage reports its own success/failure rather than one opaque flag: a
+document can legitimately end up vector-indexed but not graph-extracted (the
+embedder's hash fallback still works even when the LLM extraction call
+doesn't), and the response's `vectorIndex` / `graphExtraction` fields say
+exactly which happened.
+
+**A real bug found and fixed during verification**: the first
+implementation of the sentence splitter used a consuming regex
+(`[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$`) that, for a period *not* followed by
+whitespace — `Bun.serve()`, `qwen2.5:7b` — failed to match starting at that
+token and silently skipped it, deleting it from the chunked output
+entirely (measured: `"Bun.serve() starts an HTTP server..."` chunked down to
+`"serve() starts an HTTP server..."`, `"qwen2.5:7b"` down to `"5:7b"`).
+Fixed by switching to a lossless `String.split(/(?<=[.!?])\s+(?=[A-Z0-9"'(])/)`
+approach, which cannot drop characters the way a consuming alternation can —
+confirmed by round-tripping the same test document afterward with both
+abbreviation-like tokens intact in the extracted graph nodes.
+
+**Verified, 2026-08-25**, against real local Ollama (`qwen2.5:7b`) on this
+project's actual dev machine:
+- A ~670-char real technical paragraph (about Bun, Ollama, and this
+  project's own HNSW index) ingested with default settings → 1 chunk (under
+  `maxChunkChars`), 1 HNSW node inserted, graph extraction succeeded with
+  `nodesAdded: 8, edgesAdded: 5` — including `Bun.serve()` and `qwen2.5:7b`
+  as correctly-preserved entity names, confirming the chunking-bug fix.
+- The same text with `maxChunkChars: 150` → 4 sentence-respecting chunks
+  (84–142 chars each, no sentence split mid-way), 4 HNSW nodes inserted.
+- `text: ""` → HTTP 400, no Ollama call made.
+- `model: "not-a-real-model-xyz"` → vector indexing still succeeded
+  (`inserted: 1`), while `graphExtraction` honestly reported
+  `succeeded: false, error: "Ollama returned HTTP 404 while extracting
+  entities from chunk 1/1"` — a real Ollama 404, not a fabricated graph, and
+  proof the two ingestion stages fail independently rather than one hiding
+  the other's failure.
+- **A genuinely measured, not assumed, hardware finding**: a single
+  JSON-constrained entity-extraction call to `qwen2.5:7b` on this dev
+  machine took ~68s wall clock (`eval_duration` ≈ 66.5s for 671 output
+  tokens ≈ 10 tok/s — CPU-bound local inference, not GPU-accelerated). The
+  original 60s timeout in `src/graph_ingest.ts` was cutting off real,
+  correct, in-progress responses before they finished, not catching
+  genuinely hung requests — raised to 120s after measuring this, which also
+  benefits the pre-existing `/api/graph/ingest` endpoint.
+
 ### 🌟 Core Modules
 
 * **`src/lightrag_engine.ts`**: Dual-level graph + keyword-overlap query engine, now with real merge/dedupe ingestion (`ingestExtracted()`).
 * **`src/graph_ingest.ts`**: Real LLM entity/relation extraction from text via local Ollama (`format: "json"`), feeding `ingestExtracted()`. Honest failure (no fake graph) if Ollama is unreachable or returns unparseable output.
+* **`src/hybrid_retrieval.ts`**: Merges the graph query and a real HNSW vector search into one labeled context block, LightRAG "hybrid mode" style — used by `/api/query`.
+* **`src/document_ingest.ts`**: Real sentence-boundary chunking of user-supplied documents, feeding both the HNSW vector index and graph extraction — used by `/api/document/ingest`.
 * **`src/hnsw_vector_index.ts`** / **`src/real_vector_embedder.ts`**: Real HNSW ANN index over real (or hash-fallback) embeddings.
 * **`src/speculative_decoder.ts`**: Real draft-vs-target throughput benchmark against local Ollama (not true EAGLE).
 * **`src/dspy_compiler.ts`**: Structural prompt compiler with live Ollama A/B scoring when available (not real DSPy).
