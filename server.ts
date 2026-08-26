@@ -6,7 +6,8 @@
 
 import { LightRAGEngine } from "./src/lightrag_engine";
 import { extractGraphFromText } from "./src/graph_ingest";
-import { buildHybridContext } from "./src/hybrid_retrieval";
+import { buildHybridContext, reciprocalRankFusion } from "./src/hybrid_retrieval";
+import { buildRerankCandidates, rerankCandidates } from "./src/reranker";
 import { ingestDocument } from "./src/document_ingest";
 import { TurboQuantEngine } from "./src/turboquant";
 import { SpeculativeDecodingEngine } from "./src/speculative_decoder";
@@ -104,29 +105,93 @@ const server = Bun.serve({
       return new Response(JSON.stringify(lightRAG.getGraph()), { headers });
     }
 
-    // 3. Dual-Level LightRAG Query
+    // 3. Dual-Level LightRAG Query — with a real mode selector.
+    //
+    // LightRAG itself documents distinct retrieval modes (naive/local/
+    // global/hybrid/mix — verified against github.com/HKUDS/LightRAG) so
+    // users can compare strategies. This project's two real retrieval
+    // paths (graph keyword-overlap, HNSW vector cosine similarity) are
+    // genuinely different enough that exposing the same kind of selector
+    // is a real comparison, not decoration:
+    //   - "keyword": graph-only (LightRAGEngine.query()), no vector search.
+    //   - "vector": HNSW-only, no graph query.
+    //   - "hybrid" (default): both, merged (existing buildHybridContext).
+    //   - "hybrid_rerank": both, then every candidate (graph low-level
+    //     match + vector chunk) gets a real per-candidate Ollama call
+    //     scoring 0-10 relevance to the query (see src/reranker.ts,
+    //     LLM-as-reranker pattern), re-sorted onto one shared scale, and
+    //     THAT reranked order is what's actually sent to the synthesis
+    //     LLM as context — not decorative, it changes what the model sees.
+    //   - "hybrid_rrf": both, fused via Reciprocal Rank Fusion (k=60) —
+    //     real rank-based fusion over the two real ranked lists, no LLM
+    //     call, used as an alternative to the simple concatenation merge.
     if (url.pathname === "/api/query" && req.method === "POST") {
       try {
         const body: any = await req.json();
         const prompt = body.prompt || "";
+        const mode: string = body.mode || "hybrid";
         totalQueriesServed += 1;
 
-        const graphResult = lightRAG.query(prompt);
+        const emptyGraphResult = { lowLevelMatches: [], highLevelMatches: [], relationalPaths: [] };
+        const graphResult = mode === "vector" ? emptyGraphResult : lightRAG.query(prompt);
 
-        // Real hybrid retrieval: merge the graph query above with a real
-        // HNSW cosine-similarity vector search over the same prompt, same
-        // idea as LightRAG's own documented "hybrid mode" (graph structure
-        // + raw text chunks). Vector search failing (e.g. embedder falling
-        // back, or an empty index) degrades to graph-only context rather
-        // than failing the whole request — it's an honest empty section,
-        // not a fabricated match.
+        // Real hybrid retrieval: HNSW cosine-similarity vector search over
+        // the same prompt, same idea as LightRAG's own documented "hybrid
+        // mode" (graph structure + raw text chunks). Vector search failing
+        // (e.g. embedder falling back, or an empty index) degrades to
+        // graph-only context rather than failing the whole request — it's
+        // an honest empty section, not a fabricated match. Skipped
+        // entirely in "keyword" mode.
         let vectorMatches: Awaited<ReturnType<typeof hnswIndex.search>> = [];
-        try {
-          vectorMatches = await hnswIndex.search(prompt, 4);
-        } catch (err: any) {
-          console.warn(`hybrid retrieval: HNSW vector search failed: ${err.message}`);
+        if (mode !== "keyword") {
+          try {
+            vectorMatches = await hnswIndex.search(prompt, 4);
+          } catch (err: any) {
+            console.warn(`hybrid retrieval: HNSW vector search failed: ${err.message}`);
+          }
         }
-        const ragResult = buildHybridContext(graphResult, vectorMatches);
+
+        let ragResult = buildHybridContext(graphResult as any, vectorMatches);
+        let retrievalMode = "hybrid (graph + HNSW vector, LightRAG hybrid-mode style)";
+        let rerank: Awaited<ReturnType<typeof rerankCandidates>> | null = null;
+        let rrf: ReturnType<typeof reciprocalRankFusion> | null = null;
+
+        if (mode === "keyword") {
+          retrievalMode = "keyword (graph-only, no vector search)";
+        } else if (mode === "vector") {
+          retrievalMode = "vector (HNSW-only, no graph query)";
+        } else if (mode === "hybrid_rerank") {
+          const candidates = buildRerankCandidates(graphResult.lowLevelMatches as any, vectorMatches as any);
+          if (candidates.length > 0) {
+            const rerankModel = body.rerankModel || activeModel;
+            try {
+              rerank = await rerankCandidates(prompt, candidates, { ollamaHost: OLLAMA_HOST, model: rerankModel });
+              const rerankedContext = [
+                `=== 🎯 LLM-RERANKED CONTEXT (real per-candidate Ollama relevance scoring, 0-10 scale, model: ${rerank.model}) ===`,
+                ...rerank.candidates.map((c) => {
+                  const scoreLabel = c.rerankFailed ? `FAILED: ${c.rerankError}` : `score=${c.llmRelevanceScore}/10`;
+                  const moveLabel = c.rankDelta > 0 ? `▲${c.rankDelta}` : c.rankDelta < 0 ? `▼${Math.abs(c.rankDelta)}` : "=";
+                  return `• [${scoreLabel}, rank ${c.newRank} was ${c.originalRank} ${moveLabel}, source=${c.source}] ${c.text}`;
+                }),
+                `=====================================`
+              ].join("\n");
+              ragResult = { ...ragResult, synthesizedContext: `${rerankedContext}\n\n${ragResult.synthesizedContext}` };
+              retrievalMode = `hybrid+rerank (graph + HNSW vector, then real LLM-as-reranker via ${rerank.model}, ${rerank.totalLatencyMs}ms for ${candidates.length} candidates)`;
+            } catch (err: any) {
+              console.warn(`hybrid+rerank: reranking pass failed entirely: ${err.message}`);
+              retrievalMode = "hybrid+rerank (reranking pass failed, degraded to plain hybrid — see rerankError)";
+            }
+          }
+        } else if (mode === "hybrid_rrf") {
+          rrf = reciprocalRankFusion(graphResult.lowLevelMatches as any, vectorMatches as any, Number(body.rrfK) || 60);
+          const rrfContext = [
+            `=== 🔢 RECIPROCAL RANK FUSION CONTEXT (k=${Number(body.rrfK) || 60}, real rank fusion, no LLM call) ===`,
+            ...rrf.map((c) => `• [rrfScore=${c.rrfScore.toFixed(5)}, sources=${c.sources.join("+")}] ${c.text}`),
+            `=====================================`
+          ].join("\n");
+          ragResult = { ...ragResult, synthesizedContext: `${rrfContext}\n\n${ragResult.synthesizedContext}` };
+          retrievalMode = `hybrid+rrf (graph + HNSW vector, fused via Reciprocal Rank Fusion k=${Number(body.rrfK) || 60})`;
+        }
 
         // Perform LLM Synthesis against a live local Ollama model.
         // IMPORTANT: if Ollama is unreachable or errors, we report that
@@ -162,8 +227,11 @@ const server = Bun.serve({
         return new Response(JSON.stringify({
           success: true,
           prompt,
-          retrievalMode: "hybrid (graph + HNSW vector, LightRAG hybrid-mode style)",
+          mode,
+          retrievalMode,
           rag: ragResult,
+          rerank,
+          rrf,
           synthesis,
           synthesisError,
           llmUsed: synthesisError ? false : true

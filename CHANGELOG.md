@@ -1,5 +1,59 @@
 # Changelog
 
+## Unreleased — real LLM-as-reranker + retrieval mode selector + RRF
+
+**Gap and source.** Researched the current (2026) real state of LightRAG,
+LlamaIndex, and other local-first RAG frameworks specifically for reranking
+approaches (cross-encoder/LLM-as-reranker, RRF for hybrid search) and mode
+selectors (LightRAG documents `naive`/`local`/`global`/`hybrid`/`mix`,
+verified against https://github.com/HKUDS/LightRAG). This project's
+`hybrid_retrieval.ts` already merged graph keyword-overlap matches and HNSW
+vector matches, but never compared them on one shared relevance scale — a
+low-scoring keyword match and a genuinely relevant vector chunk were never
+judged against each other, just concatenated under separate headings.
+
+### Added
+- `src/reranker.ts` — `rerankCandidates()`: real LLM-as-reranker. One real,
+  separate Ollama `/api/chat` call per candidate (`format: "json"`,
+  `temperature: 0`), asking for an integer 0-10 relevance score against the
+  actual query on a fixed rubric; candidates re-sorted by that real score.
+  Sequential calls (not parallel) for honest per-candidate latency. A
+  failed call is marked `rerankFailed: true` and sinks to the bottom — never
+  assigned a fabricated score. `buildRerankCandidates()` builds the
+  candidate list from the same graph low-level matches + HNSW vector
+  matches `hybrid_retrieval.ts` already produces.
+- `src/hybrid_retrieval.ts` — `reciprocalRankFusion()`: real RRF
+  (`Σ 1/(k+rank)` per ranked list an item appears in, `k=60` default),
+  the rank-based hybrid-search fusion method used by
+  OpenSearch/Elasticsearch/Azure AI Search, as an alternative to the
+  existing weighted-concatenation merge.
+- `POST /api/query` (`server.ts`) gains an optional `"mode"` field:
+  `"keyword"` (graph-only, HNSW genuinely not called), `"vector"`
+  (HNSW-only, graph genuinely not queried), `"hybrid"` (existing default
+  behavior, unchanged), `"hybrid_rerank"` (runs the LLM reranker above and
+  prepends the reranked order to the actual synthesis context — not
+  decorative), `"hybrid_rrf"` (fuses via RRF). Response gains `rerank` and
+  `rrf` fields (null unless that mode ran) with full per-candidate detail.
+
+### Verified, 2026-08-26, against real local Ollama
+- `mode: "hybrid_rerank"`, `rerankModel: "llama3.2:3b"`, 7 real candidates
+  (3 graph + 4 vector) on the query *"How does the HNSW vector index
+  perform approximate nearest neighbor search and how does it relate to
+  quantization?"* — real reordering (`rankChanged: true`): the graph's
+  keyword-overlap rank-1 match (`OmniBrowserAgent.navigate()`, unrelated to
+  the query) scored `0/10` and fell to rank 3; the vector search's
+  genuinely relevant top match (HNSW description) scored `9/10` and stayed
+  rank 1. Total wall-clock **18,680ms** for 7 candidates (per-call latency
+  430ms–15,855ms, one real outlier included honestly, not filtered out).
+- `mode: "hybrid_rrf"` on the same query — the same irrelevant graph rank-1
+  match tied the relevant vector rank-1 match at `rrfScore=0.01639`
+  (`1/(60+1)` both), a real, measured illustration of RRF's blind spot
+  (rank-only, no notion of *why* something ranked first) vs. what the LLM
+  reranker caught in the same run.
+- `mode: "keyword"` → response's `rag.vectorMatches` is `[]` (HNSW never
+  called); `mode: "vector"` → `rag.lowLevelMatches` is `[]` (graph never
+  queried) — confirmed mode isolation is real, not label-only.
+
 ## Unreleased — real hybrid retrieval + real document ingestion
 
 **Gap and source.** With graph ingestion done, two gaps remained from

@@ -76,3 +76,74 @@ export function buildHybridContext(
     synthesizedContext: context,
   };
 }
+
+/**
+ * 🔢 Reciprocal Rank Fusion (RRF)
+ *
+ * The weighted merge above (`buildHybridContext`) just concatenates the
+ * graph section and the vector section under separate headings — it never
+ * actually produces one fused ranking across both sources. RRF is the
+ * standard, well-documented alternative used by real hybrid search systems
+ * (OpenSearch, Elasticsearch, Azure AI Search, Weaviate all default to it
+ * for combining a keyword/BM25 ranked list with a vector ranked list): for
+ * each item, sum 1/(k + rank) across every ranked list it appears in, where
+ * `rank` is its 1-indexed position in that list. Items ranking high in
+ * multiple lists — or consistently well in one — float to the top; a low
+ * rank in any one list barely hurts, so RRF is deliberately more robust to
+ * one source's scoring being on a totally different scale than the other's
+ * (graph keyword-overlap points vs. cosine similarity here), which is
+ * exactly the mismatch `buildHybridContext`'s simple concatenation doesn't
+ * address. k=60 is the standard default from the original RRF paper
+ * (Cormack et al., 2009) and is what most of the systems above ship with.
+ *
+ * This is real rank fusion over the same two real ranked lists
+ * (`LightRAGEngine.query()`'s keyword-scored low-level matches, and
+ * `HNSWVectorIndex.search()`'s cosine-similarity-scored matches) — no
+ * synthetic scores, no LLM call, pure arithmetic over real ranks.
+ */
+export interface RRFCandidate {
+  id: string;
+  text: string;
+  sources: ("graph" | "vector")[];
+  ranks: { source: "graph" | "vector"; rank: number }[];
+  rrfScore: number;
+}
+
+export function reciprocalRankFusion(
+  graphRanked: { id: string; name: string; description: string }[],
+  vectorRanked: { id: string; text: string }[],
+  k: number = 60
+): RRFCandidate[] {
+  const byId = new Map<string, RRFCandidate>();
+
+  graphRanked.forEach((n, i) => {
+    const rank = i + 1;
+    byId.set(n.id, {
+      id: n.id,
+      text: `${n.name}: ${n.description}`,
+      sources: ["graph"],
+      ranks: [{ source: "graph", rank }],
+      rrfScore: 1 / (k + rank),
+    });
+  });
+
+  vectorRanked.forEach((v, i) => {
+    const rank = i + 1;
+    const existing = byId.get(v.id);
+    if (existing) {
+      existing.sources.push("vector");
+      existing.ranks.push({ source: "vector", rank });
+      existing.rrfScore += 1 / (k + rank);
+    } else {
+      byId.set(v.id, {
+        id: v.id,
+        text: v.text,
+        sources: ["vector"],
+        ranks: [{ source: "vector", rank }],
+        rrfScore: 1 / (k + rank),
+      });
+    }
+  });
+
+  return Array.from(byId.values()).sort((a, b) => b.rrfScore - a.rrfScore);
+}
