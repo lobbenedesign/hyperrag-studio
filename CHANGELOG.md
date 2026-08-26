@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased — real HyDE (Hypothetical Document Embeddings)
+
+**Gap and source.** Real technique from Gao, Ma, Lin & Callan, "Precise
+Zero-Shot Dense Retrieval without Relevance Labels" (arXiv:2212.10496, ACL
+2023), also shipped in Haystack and LangChain. Every existing retrieval mode
+embedded the user's raw prompt directly; HyDE instead asks an LLM to write a
+short hypothetical answer passage first, and embeds/searches with that
+instead, closing the query/passage embedding-space gap for short queries.
+
+### Added
+- `src/hyde.ts` — `generateHypotheticalDocument()`: one real Ollama
+  `/api/chat` call that writes a 2-4 sentence answer-shaped passage for the
+  query. Throws (rather than fabricating a fallback "hypothetical document")
+  if Ollama is unreachable, errors, or returns empty output.
+- `server.ts` — `POST /api/query` gains `"vector_hyde"` and `"hybrid_hyde"`
+  modes: the vector-search half embeds the HyDE-generated passage instead of
+  the raw prompt. Optional `"hydeModel"` field picks the generator (defaults
+  to `activeModel`). On generation failure, degrades to plain raw-prompt
+  vector search and reports `hydeError` — never silently swaps in a fake
+  passage.
+
+### Verified, 2026-08-26 — real local Ollama, 3 real test queries, `vector` vs `vector_hyde`
+- 2 of 3 queries: HyDE generation succeeded (22.4s, 29.7s respectively with
+  `llama3.2:3b`), and top-1 retrieval **matched plain vector search exactly**
+  — no ranking improvement on this project's small, topically-distinct
+  5-chunk toy corpus. Consistent with the paper's own framing that HyDE's
+  benefit scales with corpus size/semantic gap, both of which this toy
+  corpus lacks.
+- 1 of 3 queries: HyDE generation itself timed out (30s), and the
+  degraded-fallback vector search then *also* missed the embedder's
+  separate 2.5s Ollama timeout (model-swap contention from the just-run
+  HyDE call), cascading into this project's pre-existing hash-based
+  embedding fallback and landing on a **different, wrong top-1 chunk** —
+  a real, measured regression versus plain vector search, not a
+  hypothetical failure mode.
+- **Honest cost**: HyDE adds one full LLM generation (22-30s on this
+  CPU-only dev machine, no GPU, `llama3.2:3b`) before every embedding call.
+  Full comparison data and per-query similarity scores are in README.md's
+  "Real HyDE" section.
+
 ## Unreleased — real LLM-as-reranker + retrieval mode selector + RRF
 
 **Gap and source.** Researched the current (2026) real state of LightRAG,

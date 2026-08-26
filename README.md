@@ -213,6 +213,8 @@ prompt:
 | `"hybrid"` (default) | Existing behavior: both, concatenated under separate headings by `buildHybridContext()`. |
 | `"hybrid_rerank"` | Both retrieved, then every candidate (graph low-level match text + vector chunk text) gets **one real, separate Ollama `/api/chat` call** (`format: "json"`, `temperature: 0`) asking for an integer 0-10 relevance score against the actual query, on a fixed rubric. Candidates are re-sorted by that real score, and the reranked block — not the original hybrid block — is what's actually prepended to the synthesis LLM's context, so this changes what the model sees, not just what the API response displays. Optional `"rerankModel"` field picks the judge model (defaults to `activeModel`, `qwen2.5:7b`). |
 | `"hybrid_rrf"` | Both retrieved, then fused via real Reciprocal Rank Fusion (`rrfScore = Σ 1/(k + rank)` per list an item appears in, `k=60` by default, overridable via `"rrfK"`) — pure arithmetic over the two real ranked lists, no LLM call. |
+| `"vector_hyde"` | `HNSWVectorIndex.search()` only, but the query text embedded is a HyDE-generated hypothetical answer passage (`src/hyde.ts`, one real Ollama call) instead of the raw prompt. Degrades to raw-prompt vector search with `hydeError` set if generation fails. See [Real HyDE](#-real-hyde--hypothetical-document-embeddings-srchydets) below. |
+| `"hybrid_hyde"` | Same as `"hybrid"`, but the vector-search half uses the HyDE-generated passage instead of the raw prompt; the graph half is unaffected. |
 
 **A real, honest limitation this surfaced, not assumed in advance**: RRF is
 rank-only — it has no idea *why* something ranks first in a list, only
@@ -273,8 +275,64 @@ limitation described above. Neither mode is "better" unconditionally —
 which is why both are exposed rather than one silently replacing
 `"hybrid"`.
 
+### 🔮 Real HyDE — Hypothetical Document Embeddings (`src/hyde.ts`)
+
+**Source, verified not assumed**: Gao, Ma, Lin & Callan, *"Precise
+Zero-Shot Dense Retrieval without Relevance Labels"* (arXiv:2212.10496, ACL
+2023) — [arxiv.org/abs/2212.10496](https://arxiv.org/abs/2212.10496). Also a
+real, shipped feature in Haystack
+([docs.haystack.deepset.ai](https://docs.haystack.deepset.ai/docs/hypothetical-document-embeddings-hyde))
+and LangChain's `HypotheticalDocumentEmbedder`, so this is an established
+technique, not a research toy.
+
+**The idea**: every mode above still embeds the user's raw prompt string
+directly. For a short query against longer descriptive passages, a query
+and the passage that actually answers it often sit further apart in
+embedding space than two passages would, because embedding models are
+generally better at document-to-document similarity than short-query-to-
+document similarity. HyDE's fix: ask an LLM to write a short *hypothetical
+answer* to the query — framed as a confident documentation/encyclopedia
+passage, possibly containing invented specifics, which is fine because it
+is never shown to the user — then embed **that** generated passage instead
+of the raw query, and search with it.
+
+`POST /api/query` gains two new `"mode"` values: `"vector_hyde"` (HNSW-only,
+query embedded via a HyDE-generated passage) and `"hybrid_hyde"` (graph +
+HNSW, same HyDE substitution on the vector side only). Optional
+`"hydeModel"` field picks the generator model (defaults to `activeModel`).
+If HyDE generation fails or times out (30s), the endpoint degrades honestly
+to a plain vector search on the raw prompt and reports `hydeError` — it
+never fabricates a fake hypothetical document.
+
+**Verified, 2026-08-26**, against real local Ollama
+(`llama3.2:3b` as the HyDE generator, seeded 5-chunk HNSW index), 3 real
+test queries, plain `"vector"` vs `"vector_hyde"`:
+
+| Query | Plain vector top-1 (sim) | HyDE top-1 (sim) | HyDE latency | Result |
+|---|---|---|---|---|
+| "How do I make nearest neighbor search fast?" | chunk-5, HNSW passage (0.688) | chunk-5, same passage (0.698) | 22,461ms | Same top-1, marginally higher similarity. No ranking change. |
+| "What technique speeds up LLM token generation using a smaller model?" | chunk-2, speculative decoding (0.671) | **HyDE generation itself timed out (30s)**, degraded to raw-query search — but the fallback run's *embedding* call then also missed Ollama's 2.5s embedder timeout (contended by the just-finished HyDE call swapping models in Ollama) and silently fell back further to this project's existing hash-based embedding (`real_vector_embedder.ts`'s documented fallback), landing on the wrong top-1 (chunk-4) with `similarity: 0` reported. | timeout | **Negative result**: on contended/slow local hardware, the extra HyDE hop can cascade into an unrelated pre-existing fallback path and make retrieval *worse* than doing nothing. |
+| "How can I shrink vector storage size?" | chunk-1, TurboQuant quantization (0.530) | chunk-1, same passage (0.083 — much lower magnitude, correct chunk) | 29,748ms | Same top-1; 3rd/4th place swapped (chunk-2/chunk-3) vs plain. |
+
+**Honest conclusion**: on this project's tiny, topically-distinct 5-chunk
+toy corpus, HyDE did not improve ranking in either successful run — plain
+vector search already picked the correct top-1 chunk both times, and HyDE
+agreed rather than correcting it. This matches the paper's own framing:
+HyDE's advantage grows with corpus size and query/passage semantic distance,
+neither of which this toy corpus has much of. What HyDE reliably cost:
+**one full extra LLM generation** before every embedding call —
+22.4s–29.7s per query on this CPU-bound local hardware with `llama3.2:3b`
+(no GPU) — and, in the one query where the local Ollama instance was slow
+enough to hit both timeouts back to back, it produced a real regression via
+this project's pre-existing hash-embedding fallback rather than gracefully
+degrading to the raw-prompt plain-vector result a user would expect. That
+fallback interaction is a genuine, measured limitation of running HyDE
+against a small local model on constrained hardware, not a hypothetical
+edge case — it happened on 1 of 3 real test runs.
+
 ### 🌟 Core Modules
 
+* **`src/hyde.ts`**: Real HyDE (Hypothetical Document Embeddings, Gao et al. 2023) — one real Ollama call generates a hypothetical answer passage, which is what actually gets embedded and searched, for `/api/query`'s `"vector_hyde"`/`"hybrid_hyde"` modes.
 * **`src/lightrag_engine.ts`**: Dual-level graph + keyword-overlap query engine, now with real merge/dedupe ingestion (`ingestExtracted()`).
 * **`src/graph_ingest.ts`**: Real LLM entity/relation extraction from text via local Ollama (`format: "json"`), feeding `ingestExtracted()`. Honest failure (no fake graph) if Ollama is unreachable or returns unparseable output.
 * **`src/hybrid_retrieval.ts`**: Merges the graph query and a real HNSW vector search into one labeled context block, LightRAG "hybrid mode" style, plus a real Reciprocal Rank Fusion implementation (`reciprocalRankFusion()`) as an alternative fusion strategy — used by `/api/query`.

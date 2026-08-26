@@ -8,6 +8,7 @@ import { LightRAGEngine } from "./src/lightrag_engine";
 import { extractGraphFromText } from "./src/graph_ingest";
 import { buildHybridContext, reciprocalRankFusion } from "./src/hybrid_retrieval";
 import { buildRerankCandidates, rerankCandidates } from "./src/reranker";
+import { generateHypotheticalDocument } from "./src/hyde";
 import { ingestDocument } from "./src/document_ingest";
 import { TurboQuantEngine } from "./src/turboquant";
 import { SpeculativeDecodingEngine } from "./src/speculative_decoder";
@@ -133,19 +134,41 @@ const server = Bun.serve({
         totalQueriesServed += 1;
 
         const emptyGraphResult = { lowLevelMatches: [], highLevelMatches: [], relationalPaths: [] };
-        const graphResult = mode === "vector" ? emptyGraphResult : lightRAG.query(prompt);
+        const graphResult =
+          mode === "vector" || mode === "vector_hyde" ? emptyGraphResult : lightRAG.query(prompt);
+
+        // Real HyDE (Gao et al., arXiv:2212.10496 — see src/hyde.ts): for
+        // "vector_hyde" / "hybrid_hyde" modes, generate one hypothetical
+        // answer-shaped passage via a real Ollama call and embed/search
+        // THAT instead of the raw prompt. If generation fails (Ollama down,
+        // empty output), we degrade honestly to a plain vector search on
+        // the raw prompt rather than fabricating a hypothetical document.
+        let hyde: Awaited<ReturnType<typeof generateHypotheticalDocument>> | null = null;
+        let hydeError: string | null = null;
+        let vectorSearchQuery = prompt;
+        if (mode === "vector_hyde" || mode === "hybrid_hyde") {
+          try {
+            const hydeModel = body.hydeModel || activeModel;
+            hyde = await generateHypotheticalDocument(prompt, { ollamaHost: OLLAMA_HOST, model: hydeModel });
+            vectorSearchQuery = hyde.hypotheticalDocument;
+          } catch (err: any) {
+            hydeError = err.message;
+            console.warn(`HyDE: generation failed, degrading to raw-query vector search: ${err.message}`);
+          }
+        }
 
         // Real hybrid retrieval: HNSW cosine-similarity vector search over
-        // the same prompt, same idea as LightRAG's own documented "hybrid
-        // mode" (graph structure + raw text chunks). Vector search failing
-        // (e.g. embedder falling back, or an empty index) degrades to
-        // graph-only context rather than failing the whole request — it's
-        // an honest empty section, not a fabricated match. Skipped
-        // entirely in "keyword" mode.
+        // the query text (raw prompt, or — in HyDE modes — the generated
+        // hypothetical document above), same idea as LightRAG's own
+        // documented "hybrid mode" (graph structure + raw text chunks).
+        // Vector search failing (e.g. embedder falling back, or an empty
+        // index) degrades to graph-only context rather than failing the
+        // whole request — it's an honest empty section, not a fabricated
+        // match. Skipped entirely in "keyword" mode.
         let vectorMatches: Awaited<ReturnType<typeof hnswIndex.search>> = [];
         if (mode !== "keyword") {
           try {
-            vectorMatches = await hnswIndex.search(prompt, 4);
+            vectorMatches = await hnswIndex.search(vectorSearchQuery, 4);
           } catch (err: any) {
             console.warn(`hybrid retrieval: HNSW vector search failed: ${err.message}`);
           }
@@ -160,6 +183,14 @@ const server = Bun.serve({
           retrievalMode = "keyword (graph-only, no vector search)";
         } else if (mode === "vector") {
           retrievalMode = "vector (HNSW-only, no graph query)";
+        } else if (mode === "vector_hyde") {
+          retrievalMode = hyde
+            ? `vector+HyDE (HNSW-only, query embedded via ${hyde.model}-generated hypothetical document, ${hyde.latencyMs}ms, no graph query)`
+            : `vector+HyDE (generation failed — degraded to raw-query vector search, no graph query; hydeError: ${hydeError})`;
+        } else if (mode === "hybrid_hyde") {
+          retrievalMode = hyde
+            ? `hybrid+HyDE (graph + HNSW vector, vector side embedded via ${hyde.model}-generated hypothetical document, ${hyde.latencyMs}ms)`
+            : `hybrid+HyDE (generation failed — degraded to plain hybrid on raw query; hydeError: ${hydeError})`;
         } else if (mode === "hybrid_rerank") {
           const candidates = buildRerankCandidates(graphResult.lowLevelMatches as any, vectorMatches as any);
           if (candidates.length > 0) {
@@ -232,6 +263,8 @@ const server = Bun.serve({
           rag: ragResult,
           rerank,
           rrf,
+          hyde: hyde ? { ...hyde } : null,
+          hydeError,
           synthesis,
           synthesisError,
           llmUsed: synthesisError ? false : true
