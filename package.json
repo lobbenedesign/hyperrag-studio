@@ -5,7 +5,9 @@
   "main": "server.ts",
   "scripts": {
     "start": "bun server.ts",
-    "dev": "bun --watch server.ts"
+    "dev": "bun --watch server.ts",
+    "build": "bun build server.ts --target=bun --outdir dist",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [
     "lightrag",
@@ -18,5 +20,9 @@
     "knowledge-graph"
   ],
   "author": "Giuseppe Lobbene",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "typescript": "^7.0.2"
+  }
 }
