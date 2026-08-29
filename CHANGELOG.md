@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — optional LocalAI backend for graph ingestion and the speculative-decoding benchmark
+
+**Gap identified:** `src/graph_ingest.ts` and `src/speculative_decoder.ts` were both hardwired to Ollama's native API (`/api/chat` with `format:"json"`, and `/api/generate` reading `eval_count`/`eval_duration`). Neither is a URL-only swap to [LocalAI](https://github.com/mudler/LocalAI): the request shapes differ (OpenAI's `response_format:{type:"json_object"}` vs Ollama's `format:"json"`), the response envelopes differ (`choices[0].message.content` vs `message.content`), and LocalAI's OpenAI-compatible response doesn't expose Ollama's internal `eval_duration` timer at all.
+
+**What was built:**
+- `src/graph_ingest.ts`: extraction now goes through a new internal `callChatJSON()` that branches on `LLM_BACKEND` (`ollama` default, unchanged; `localai` targets `LOCALAI_HOST`, default `http://localhost:8080`, via `/v1/chat/completions` with `response_format:{type:"json_object"}`). Same per-chunk error context, same "never fabricate on a parse failure, throw instead" policy on both backends.
+- `src/speculative_decoder.ts`: `generate()` now branches the same way. On LocalAI, tokens/sec is computed from wall-clock latency divided into the real `usage.completion_tokens` count, since LocalAI's response doesn't carry an internal generation-duration field the way Ollama's does — a real measurement, but of a slightly different quantity (it includes request/connection overhead Ollama's internal timer excludes), labelled honestly via the new `mode: "live-localai-draft-target"` value and an explicit note in the result, not presented as identical to the Ollama numbers.
+
+**Verified live, not just typechecked:**
+1. `tsc --noEmit` — clean.
+2. `POST /api/speculative/bench` and `POST /api/graph/ingest` both re-run against this machine's real local Ollama instance with `LLM_BACKEND` unset — identical behaviour to before (`mode: "live-ollama-draft-target"`, real entity/relation extraction), confirming the refactor didn't change the default path.
+3. Both endpoints re-run with `LLM_BACKEND=localai` and no LocalAI instance running in this environment — both failed honestly (`"Unable to connect..."` / `success:false`), no fabricated benchmark numbers or graph nodes.
+4. No LocalAI instance was available in this environment to verify a real end-to-end LocalAI response (real tokens/sec, real extracted entities) — implemented against LocalAI's documented/source-confirmed OpenAI-compatible request/response shape, stated explicitly rather than hidden.
+
 ## Unreleased — real HyDE (Hypothetical Document Embeddings)
 
 **Gap and source.** Real technique from Gao, Ma, Lin & Callan, "Precise

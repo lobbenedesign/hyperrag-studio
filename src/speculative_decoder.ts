@@ -27,7 +27,7 @@
  */
 
 export interface SpeculativeBenchmarkResult {
-  mode: "live-ollama-draft-target";
+  mode: "live-ollama-draft-target" | "live-localai-draft-target";
   draftModel: string;
   targetModel: string;
   draftTokensPerSec: number;
@@ -60,7 +60,47 @@ export class SpeculativeDecodingEngine {
     this.draftModel = draftModel;
   }
 
+  /**
+   * Ollama's native /api/generate reports its own internal eval_count/
+   * eval_duration (pure generation time, excluding model load & network),
+   * which is what this used exclusively before. LocalAI's OpenAI-compatible
+   * /v1/chat/completions doesn't expose that internal timer in its response
+   * envelope, so its tokens/sec is computed from wall-clock latency (already
+   * measured here) divided into the real completion_tokens count from
+   * `usage` — a real measurement, just of a slightly different quantity
+   * (wall clock includes network + connection overhead that Ollama's
+   * internal counter excludes). Labelled honestly via `mode` and `notes`
+   * rather than presented as identical to the Ollama numbers.
+   */
   private async generate(model: string, prompt: string): Promise<{ text: string; tokens: number; tps: number; latencyMs: number }> {
+    const backend = (process.env.LLM_BACKEND || "ollama").trim().toLowerCase() === "localai" ? "localai" : "ollama";
+
+    if (backend === "localai") {
+      const localaiHost = process.env.LOCALAI_HOST || "http://localhost:8080";
+      const start = performance.now();
+      const res = await fetch(`${localaiHost}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: prompt }],
+          max_tokens: 96,
+          stream: false
+        }),
+        signal: AbortSignal.timeout(60000)
+      });
+      const latencyMs = performance.now() - start;
+      if (!res.ok) {
+        throw new Error(`LocalAI returned HTTP ${res.status} for model ${model}`);
+      }
+      const data: any = await res.json();
+      const text = data.choices?.[0]?.message?.content || "";
+      const tokens = data.usage?.completion_tokens || 0;
+      const durationSec = latencyMs / 1000;
+      const tps = durationSec > 0 && tokens > 0 ? Number((tokens / durationSec).toFixed(2)) : 0;
+      return { text, tokens, tps, latencyMs: Number(latencyMs.toFixed(1)) };
+    }
+
     const start = performance.now();
     const res = await fetch(`${this.ollamaHost}/api/generate`, {
       method: "POST",
@@ -111,9 +151,10 @@ export class SpeculativeDecodingEngine {
 
     const acceptance = this.computeTokenOverlap(draft.text, target.text);
     const speedup = target.tps > 0 ? draft.tps / target.tps : 0;
+    const backend = (process.env.LLM_BACKEND || "ollama").trim().toLowerCase() === "localai" ? "localai" : "ollama";
 
     return {
-      mode: "live-ollama-draft-target",
+      mode: backend === "localai" ? "live-localai-draft-target" : "live-ollama-draft-target",
       draftModel: this.draftModel,
       targetModel,
       draftTokensPerSec: draft.tps,
@@ -126,7 +167,9 @@ export class SpeculativeDecodingEngine {
       targetLatencyMs: target.latencyMs,
       draftOutputPreview: draft.text.slice(0, 160),
       targetOutputPreview: target.text.slice(0, 160),
-      notes: "Empirical draft-vs-target throughput/overlap measured live against Ollama. Not true EAGLE/Medusa logit-level speculative verification (Ollama's API does not expose the hidden state / draft-head hooks that would require)."
+      notes: backend === "localai"
+        ? "Empirical draft-vs-target throughput/overlap measured live against LocalAI. Tokens/sec here is wall-clock latency / real completion_tokens (LocalAI's OpenAI-compatible response doesn't expose Ollama's internal eval_duration timer), so it includes request/connection overhead the Ollama-mode numbers don't. Not true EAGLE/Medusa logit-level speculative verification (neither API exposes the hidden state / draft-head hooks that would require)."
+        : "Empirical draft-vs-target throughput/overlap measured live against Ollama. Not true EAGLE/Medusa logit-level speculative verification (Ollama's API does not expose the hidden state / draft-head hooks that would require)."
     };
   }
 }

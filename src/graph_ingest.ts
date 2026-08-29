@@ -138,6 +138,85 @@ function validateExtraction(parsed: any): { entities: ExtractedEntity[]; relatio
   return { entities, relations };
 }
 
+/**
+ * Backend selected via LLM_BACKEND ("ollama" default, unchanged behaviour;
+ * "localai" routes the same JSON-constrained extraction through a local
+ * LocalAI instance's OpenAI-compatible /v1/chat/completions instead —
+ * LOCALAI_HOST env var, default http://localhost:8080). Both request shapes
+ * differ (Ollama's native /api/chat with format:"json" vs OpenAI's
+ * response_format:{type:"json_object"}) and so does the response envelope
+ * (data.message.content vs data.choices[0].message.content), so this is a
+ * real per-backend request/parse, not a URL swap.
+ */
+async function callChatJSON(
+  systemPrompt: string,
+  userContent: string,
+  opts: { ollamaHost: string; model: string; timeoutMs?: number },
+  errorContext: string
+): Promise<string> {
+  const backend = (process.env.LLM_BACKEND || "ollama").trim().toLowerCase() === "localai" ? "localai" : "ollama";
+  // Default raised from an earlier 60000ms after real measurement on this
+  // project's actual dev machine: a single JSON-constrained extraction call
+  // to qwen2.5:7b took ~68s wall clock (eval_duration ~66.5s for 671 output
+  // tokens ≈ 10 tok/s, CPU-bound local inference) — 60s was cutting off
+  // real, in-progress, correct responses, not catching genuinely hung
+  // requests. 120s gives real slow-hardware CPU inference room to finish.
+  const timeout = opts.timeoutMs ?? 120000;
+
+  if (backend === "localai") {
+    const localaiHost = process.env.LOCALAI_HOST || "http://localhost:8080";
+    const res = await fetch(`${localaiHost}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: opts.model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userContent }
+        ],
+        response_format: { type: "json_object" },
+        stream: false
+      }),
+      signal: AbortSignal.timeout(timeout)
+    });
+    if (!res.ok) {
+      throw new Error(`LocalAI returned HTTP ${res.status} while ${errorContext}`);
+    }
+    const data: any = await res.json();
+    const raw: string = data.choices?.[0]?.message?.content ?? "";
+    if (!raw) {
+      throw new Error(`LocalAI returned no content while ${errorContext} (model: ${opts.model})`);
+    }
+    return raw;
+  }
+
+  const res = await fetch(`${opts.ollamaHost}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: opts.model,
+      format: "json",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userContent }
+      ],
+      stream: false
+    }),
+    signal: AbortSignal.timeout(timeout)
+  });
+
+  if (!res.ok) {
+    throw new Error(`Ollama returned HTTP ${res.status} while ${errorContext}`);
+  }
+
+  const data: any = await res.json();
+  const raw: string = data.message?.content ?? "";
+  if (!raw) {
+    throw new Error(`Ollama returned no content while ${errorContext} (model: ${opts.model})`);
+  }
+  return raw;
+}
+
 export async function extractGraphFromText(
   text: string,
   opts: { ollamaHost: string; model: string; timeoutMs?: number }
@@ -151,47 +230,15 @@ export async function extractGraphFromText(
 
   for (let i = 0; i < chunks.length; i++) {
     const chunkTextPiece = chunks[i];
-    const res = await fetch(`${opts.ollamaHost}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: opts.model,
-        format: "json",
-        messages: [
-          { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
-          { role: "user", content: chunkTextPiece }
-        ],
-        stream: false
-      }),
-      // Default raised from an earlier 60000ms after real measurement on
-      // this project's actual dev machine: a single JSON-constrained
-      // extraction call to qwen2.5:7b took ~68s wall clock (eval_duration
-      // ~66.5s for 671 output tokens ≈ 10 tok/s, CPU-bound local inference)
-      // — 60s was cutting off real, in-progress, correct responses, not
-      // catching genuinely hung requests. 120s gives real slow-hardware
-      // CPU inference room to finish before this is treated as a failure.
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 120000)
-    });
+    const errorContext = `extracting entities from chunk ${i + 1}/${chunks.length}`;
 
-    if (!res.ok) {
-      throw new Error(
-        `Ollama returned HTTP ${res.status} while extracting entities from chunk ${i + 1}/${chunks.length}`
-      );
-    }
-
-    const data: any = await res.json();
-    const raw: string = data.message?.content ?? "";
-    if (!raw) {
-      throw new Error(`Ollama returned no content for chunk ${i + 1}/${chunks.length} (model: ${opts.model})`);
-    }
+    const raw = await callChatJSON(EXTRACTION_SYSTEM_PROMPT, chunkTextPiece, opts, errorContext);
 
     let parsed: any;
     try {
       parsed = JSON.parse(raw);
     } catch (e: any) {
-      throw new Error(
-        `Ollama's response for chunk ${i + 1}/${chunks.length} was not valid JSON despite format:"json": ${e.message}`
-      );
+      throw new Error(`Response for chunk ${i + 1}/${chunks.length} was not valid JSON despite requesting JSON output: ${e.message}`);
     }
 
     const { entities, relations } = validateExtraction(parsed);
